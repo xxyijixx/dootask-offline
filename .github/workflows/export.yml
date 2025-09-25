@@ -1,0 +1,60 @@
+name: Export Docker Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to use (leave blank for latest)'
+        required: false
+        default: ''
+
+jobs:
+  export-images:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone dootask repo
+        run: |
+          git clone https://github.com/kuaifan/dootask.git --depth 1
+          cd dootask
+          git fetch --tags
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            git checkout ${{ github.event.inputs.tag }}
+          else
+            latest_tag=$(git tag --sort=-creatordate | tail -n 1)
+            git checkout $latest_tag
+            echo "Using latest tag: $latest_tag"
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract image names from docker-compose.yml
+        id: images
+        run: |
+          cd dootask
+          images=$(yq '.services.*.image' docker-compose.yml | grep -v null | sort | uniq | paste -sd ' ')
+          echo "images=$images" >> $GITHUB_OUTPUT
+
+      - name: Pull images
+        run: |
+          cd dootask
+          for img in ${{ steps.images.outputs.images }}; do
+            docker pull "$img"
+          done
+
+      - name: Save images to tar files
+        run: |
+          mkdir -p images
+          cd dootask
+          for img in ${{ steps.images.outputs.images }}; do
+            fname=$(echo $img | tr '/:' '_')
+            docker save "$img" -o "../images/${fname}.tar"
+          done
+
+      - name: Upload images as release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: images/*.tar
+          tag_name: ${{ github.event.inputs.tag }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
