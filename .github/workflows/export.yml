@@ -1,62 +1,100 @@
-name: Export Docker Images
+name: Export Multi-Arch Docker Images
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to use (leave blank for latest)'
+        description: 'Git tag to export (leave blank for latest)'
         required: false
         default: ''
 
 jobs:
   export-images:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Clone dootask repo
+      - name: Prepare environment & free disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android || true
+          docker system prune -af || true
+          mkdir -p images
+
+      - name: Clone dootask repo and checkout tag
         run: |
           git clone https://github.com/kuaifan/dootask.git --depth 1
           cd dootask
           git fetch --tags
+
           if [ -n "${{ github.event.inputs.tag }}" ]; then
-            git checkout ${{ github.event.inputs.tag }}
+            git checkout "${{ github.event.inputs.tag }}"
             echo "TAG_TO_USE=${{ github.event.inputs.tag }}" >> $GITHUB_ENV
           else
             latest_tag=$(git tag --sort=-creatordate | head -n 1)
-            git checkout $latest_tag
-            echo "Using latest tag: $latest_tag"
+            git checkout "$latest_tag"
             echo "TAG_TO_USE=$latest_tag" >> $GITHUB_ENV
           fi
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Extract image names from docker-compose.yml
-        id: images
+      - name: Extract image list from docker-compose.yml
         run: |
           cd dootask
-          images=$(yq '.services.*.image' docker-compose.yml | grep -v null | sort | uniq | paste -sd ' ')
-          echo "images=$images" >> $GITHUB_OUTPUT
+          yq '.services.*.image' docker-compose.yml \
+            | grep -v null \
+            | sort -u > /tmp/images.txt
 
-      - name: Pull images
+          echo "Images to export:"
+          cat /tmp/images.txt
+
+      - name: Pull, export and cleanup images (amd64 & arm64)
         run: |
-          cd dootask
-          for img in ${{ steps.images.outputs.images }}; do
-            docker pull "$img"
+          platforms="linux/amd64 linux/arm64"
+
+          while read -r img; do
+            for platform in $platforms; do
+              arch=$(echo "$platform" | cut -d/ -f2)
+
+              echo "=== $img ($platform) ==="
+
+              docker pull --platform "$platform" "$img"
+
+              fname=$(echo "$img" | tr '/:' '_')
+              mkdir -p "images/$arch"
+
+              docker save "$img" | gzip > "images/$arch/${fname}.tar.gz"
+
+              docker rmi "$img"
+              docker system prune -af
+            done
+          done < /tmp/images.txt
+
+      - name: Create GitHub Release and upload assets
+        run: |
+          tag="${TAG_TO_USE}"
+          repo="${GITHUB_REPOSITORY}"
+          token="${GITHUB_TOKEN}"
+
+          echo "Creating release $tag"
+
+          release_json=$(curl -s -X POST \
+            -H "Authorization: token $token" \
+            -H "Content-Type: application/json" \
+            https://api.github.com/repos/$repo/releases \
+            -d "{
+              \"tag_name\": \"$tag\",
+              \"name\": \"Offline Docker Images ($tag)\",
+              \"draft\": false,
+              \"prerelease\": false
+            }")
+
+          upload_url=$(echo "$release_json" | jq -r '.upload_url' | sed 's/{?name,label}//')
+
+          for file in $(find images -type f); do
+            name=$(basename "$file")
+            echo "Uploading $name"
+            curl -s -X POST \
+              -H "Authorization: token $token" \
+              -H "Content-Type: application/gzip" \
+              --data-binary @"$file" \
+              "$upload_url?name=$name"
           done
-
-      - name: Save images to tar files
-        run: |
-          mkdir -p images
-          cd dootask
-          for img in ${{ steps.images.outputs.images }}; do
-            fname=$(echo $img | tr '/:' '_')
-            docker save "$img" -o "../images/${fname}.tar"
-          done
-
-      - name: Upload images as release asset
-        uses: softprops/action-gh-release@v2
-        with:
-          files: images/*.tar
-          tag_name: ${{ env.TAG_TO_USE }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
