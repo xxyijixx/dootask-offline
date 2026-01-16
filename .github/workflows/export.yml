@@ -61,8 +61,7 @@ jobs:
 
               docker save "$img" | gzip > "$tmp"
 
-              hash=$(sha256sum "$tmp" | cut -d' ' -f1 | cut -c1-12)
-              final="images/${fname}__${arch}__${hash}.tar.gz"
+              final="images/${fname}__${arch}.tar.gz"
               mv "$tmp" "$final"
 
               docker rmi "$img"
@@ -84,7 +83,7 @@ jobs:
             https://api.github.com/repos/$repo/releases \
             -d "{
               \"tag_name\": \"$tag\",
-              \"name\": \"Offline Docker Images ($tag)\",
+              \"name\": \"$tag\",
               \"draft\": false,
               \"prerelease\": false
             }")
