@@ -57,9 +57,13 @@ jobs:
               docker pull --platform "$platform" "$img"
 
               fname=$(echo "$img" | tr '/:' '_')
-              mkdir -p "images/$arch"
+              tmp="images/${fname}__${arch}.tar.gz"
 
-              docker save "$img" | gzip > "images/$arch/${fname}.tar.gz"
+              docker save "$img" | gzip > "$tmp"
+
+              hash=$(sha256sum "$tmp" | cut -d' ' -f1 | cut -c1-12)
+              final="images/${fname}__${arch}__${hash}.tar.gz"
+              mv "$tmp" "$final"
 
               docker rmi "$img"
               docker system prune -af
@@ -87,7 +91,7 @@ jobs:
 
           upload_url=$(echo "$release_json" | jq -r '.upload_url' | sed 's/{?name,label}//')
 
-          for file in $(find images -type f); do
+          for file in images/*.tar.gz; do
             name=$(basename "$file")
             echo "Uploading $name"
             curl -s -X POST \
